@@ -1,6 +1,24 @@
 // 规则信号引擎：按图片中的规则 1-4 评估买卖信号
 import type { RuleCheck, SignalResult, TradeInput, Variety } from "@contracts/futures";
-import { fetch15MinKlines } from "./sina";
+import { fetch15MinKlines, type KlineBar } from "./sina";
+
+const CHART_BARS = 120; // 图表展示的最近K线根数
+
+function buildChart(bars: KlineBar[]): SignalResult["chart"] {
+  const slice = bars.slice(-CHART_BARS);
+  // 计算全序列MA200，再对齐截取
+  const closesAll = bars.map((b) => b.c);
+  const maAll: (number | null)[] = closesAll.map((_, i) => {
+    if (i < 199) return null;
+    let s = 0;
+    for (let j = i - 199; j <= i; j++) s += closesAll[j];
+    return s / 200;
+  });
+  return {
+    bars: slice.map((b) => ({ t: b.d, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v })),
+    ma: maAll.slice(-CHART_BARS),
+  };
+}
 
 export async function evaluateSignal(input: TradeInput, variety: Variety): Promise<SignalResult> {
   const bars = await fetch15MinKlines(input.contract);
@@ -121,5 +139,6 @@ export async function evaluateSignal(input: TradeInput, variety: Variety): Promi
     },
     updatedAt: last.d,
     serverTime: new Date().toISOString(),
+    chart: buildChart(bars),
   };
 }

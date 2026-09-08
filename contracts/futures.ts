@@ -116,4 +116,9 @@ export interface SignalResult {
   };
   updatedAt: string; // 行情时间
   serverTime: string;
+  // 图表数据：最近N根15分钟K线与对应MA200
+  chart: {
+    bars: { t: string; o: number; h: number; l: number; c: number; v: number }[];
+    ma: (number | null)[]; // 与 bars 等长
+  };
 }

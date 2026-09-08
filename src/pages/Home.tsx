@@ -36,8 +36,8 @@ const fmt = (n: number, d = 1) =>
   n.toLocaleString("zh-CN", { minimumFractionDigits: d, maximumFractionDigits: d });
 const fmt0 = (n: number) => fmt(n, 0);
 
-// ---------- 迷你K线图（Canvas） ----------
-function MiniKline({ signal }: { signal: SignalResult }) {
+// ---------- 15分钟K线图（蜡烛 + MA200 + 现价 + 自动止损价） ----------
+function KLineChart({ signal }: { signal: SignalResult }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const cv = ref.current;
@@ -48,37 +48,120 @@ function MiniKline({ signal }: { signal: SignalResult }) {
     const ctx = cv.getContext("2d")!;
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, W, H);
-    // 后端仅传了关键数字，没有完整K线数组——画价格与MA200关系示意
-    const pad = 8;
-    const all = [signal.ma200, signal.lastPrice, signal.prevClose, signal.lastCandle.open, signal.lastCandle.close];
-    const min = Math.min(...all), max = Math.max(...all);
-    const span = max - min || 1;
-    const y = (v: number) => pad + (1 - (v - min) / span) * (H - pad * 2);
-    // MA200 线
-    ctx.strokeStyle = "#fbbf24";
-    ctx.setLineDash([5, 4]);
+
+    const { bars, ma } = signal.chart;
+    if (!bars.length) return;
+
+    // 布局：左侧价格轴 52px，底部时间轴 18px，下方成交量区
+    const axW = 56, axH = 20;
+    const plotW = W - axW, plotH = H - axH;
+    const volH = Math.round(plotH * 0.16);
+    const priceH = plotH - volH;
+
+    // 参与定界的价格：K线 + MA200 + 现价 + 两个建议止损价
+    const prices = bars.flatMap((b) => [b.h, b.l])
+      .concat(ma.filter((x): x is number => x != null))
+      .concat([signal.lastPrice, signal.risk.suggestedLongStop, signal.risk.suggestedShortStop]);
+    let min = Math.min(...prices), max = Math.max(...prices);
+    const padP = (max - min) * 0.04 || 1;
+    min -= padP; max += padP;
+    const y = (v: number) => ((max - v) / (max - min)) * priceH;
+    const maxVol = Math.max(...bars.map((b) => b.v), 1);
+    const yv = (v: number) => plotH - (v / maxVol) * volH;
+
+    const n = bars.length;
+    const step = plotW / n;
+    const cw = Math.max(1.5, Math.min(7, step * 0.62));
+    const x = (i: number) => i * step + step / 2;
+
+    // 网格
+    ctx.strokeStyle = "rgba(26,37,64,0.8)";
     ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(0, y(signal.ma200)); ctx.lineTo(W, y(signal.ma200)); ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.font = "10px 'JetBrains Mono', monospace";
+    for (let g = 0; g <= 4; g++) {
+      const gy = (priceH / 4) * g;
+      ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(plotW, gy); ctx.stroke();
+      const pv = max - ((max - min) / 4) * g;
+      ctx.fillStyle = "#5d6b87";
+      ctx.textAlign = "left";
+      ctx.fillText(fmt(pv), plotW + 4, gy + 3);
+    }
+
+    // 成交量
+    bars.forEach((b, i) => {
+      const bull = b.c >= b.o;
+      ctx.fillStyle = bull ? "rgba(251,44,54,0.5)" : "rgba(0,187,127,0.5)";
+      const top = yv(b.v);
+      ctx.fillRect(x(i) - cw / 2, top, cw, plotH - top);
+    });
+
+    // 蜡烛
+    bars.forEach((b, i) => {
+      const bull = b.c >= b.o;
+      const col = bull ? "#fb2c36" : "#00bb7f";
+      ctx.strokeStyle = col;
+      ctx.beginPath(); ctx.moveTo(x(i), y(b.h)); ctx.lineTo(x(i), y(b.l)); ctx.stroke();
+      const top = y(Math.max(b.o, b.c)), bot = y(Math.min(b.o, b.c));
+      if (bull) {
+        ctx.fillStyle = "#0c1220";
+        ctx.fillRect(x(i) - cw / 2, top, cw, Math.max(1, bot - top));
+        ctx.strokeRect(x(i) - cw / 2, top, cw, Math.max(1, bot - top));
+      } else {
+        ctx.fillStyle = col;
+        ctx.fillRect(x(i) - cw / 2, top, cw, Math.max(1, bot - top));
+      }
+    });
+
+    // MA200
+    ctx.strokeStyle = "#fbbf24";
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    let started = false;
+    ma.forEach((m, i) => {
+      if (m == null) return;
+      const px = x(i), py = y(m);
+      if (!started) { ctx.moveTo(px, py); started = true; } else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
     ctx.fillStyle = "#fbbf24";
-    ctx.font = "10px JetBrains Mono, monospace";
+    ctx.textAlign = "left";
     ctx.fillText(`MA200 ${fmt(signal.ma200)}`, 6, y(signal.ma200) - 4);
-    // 最近一根K线
-    const cx = W - 46, cw = 14;
-    const c = signal.lastCandle;
-    const col = c.bullish ? "#fb2c36" : "#00bb7f";
-    ctx.strokeStyle = col; ctx.fillStyle = col;
-    const bodyTop = y(Math.max(c.open, c.close)), bodyBot = y(Math.min(c.open, c.close));
-    ctx.fillRect(cx, bodyTop, cw, Math.max(2, bodyBot - bodyTop));
-    ctx.strokeRect(cx - 0.5, bodyTop - 0.5, cw + 1, Math.max(2, bodyBot - bodyTop) + 1);
-    // 现价线
-    ctx.strokeStyle = "#22d3ee";
-    ctx.setLineDash([2, 3]);
-    ctx.beginPath(); ctx.moveTo(0, y(signal.lastPrice)); ctx.lineTo(W, y(signal.lastPrice)); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = "#22d3ee";
-    ctx.fillText(fmt(signal.lastPrice), 6, y(signal.lastPrice) + 12);
-    ctx.fillText(c.bullish ? "阳" : "阴", cx + 2, bodyTop - 6);
+
+    // 画价格水平线 + 右侧标签
+    const priceLine = (v: number, col: string, label: string, dash: number[]) => {
+      const py = y(v);
+      ctx.strokeStyle = col;
+      ctx.setLineDash(dash);
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, py); ctx.lineTo(plotW, py); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = col;
+      const tw = ctx.measureText(label).width + 8;
+      ctx.fillRect(plotW - tw - 2, py - 7, tw, 14);
+      ctx.fillStyle = "#050810";
+      ctx.textAlign = "left";
+      ctx.fillText(label, plotW - tw + 2, py + 3);
+    };
+
+    // 自动止损价：只显示当前规则允许的方向
+    if (signal.longVerdict.allowed) {
+      priceLine(signal.risk.suggestedLongStop, "#fbbf24", `止损 ${fmt(signal.risk.suggestedLongStop)}`, [6, 4]);
+    }
+    if (signal.shortVerdict.allowed) {
+      priceLine(signal.risk.suggestedShortStop, "#fbbf24", `止损 ${fmt(signal.risk.suggestedShortStop)}`, [6, 4]);
+    }
+
+    // 当前价
+    priceLine(signal.lastPrice, "#22d3ee", `现价 ${fmt(signal.lastPrice)}`, [2, 3]);
+
+    // 时间轴（起、中、终）
+    ctx.fillStyle = "#5d6b87";
+    ctx.textAlign = "left";
+    ctx.fillText(bars[0].t.slice(5, 16), 4, H - 6);
+    ctx.textAlign = "center";
+    ctx.fillText(bars[Math.floor(n / 2)].t.slice(5, 16), plotW / 2, H - 6);
+    ctx.textAlign = "right";
+    ctx.fillText(bars[n - 1].t.slice(5, 16), plotW - 4, H - 6);
   }, [signal]);
   return <canvas ref={ref} className="h-full w-full" />;
 }
@@ -291,7 +374,7 @@ export default function Home() {
           {signal && (
             <>
               {/* 行情条 */}
-              <div className="grid gap-4 border border-[var(--line)] bg-[var(--panel)] p-4 sm:grid-cols-[1fr_220px]">
+              <div className="border border-[var(--line)] bg-[var(--panel)] p-4">
                 <div>
                   <div className="flex items-baseline gap-3">
                     <span className="text-base font-bold">{signal.varietyName} {signal.contract}</span>
@@ -313,7 +396,21 @@ export default function Home() {
                       {signal.lastCandle.bullish ? "阳线" : "阴线"}</b>（{signal.lastCandle.time.slice(11, 16)}）</span>
                   </div>
                 </div>
-                <div className="hidden h-28 sm:block"><MiniKline signal={signal} /></div>
+              </div>
+
+              {/* 15分钟K线图 */}
+              <div className="border border-[var(--line)] bg-[var(--panel)]">
+                <div className="flex items-center justify-between border-b border-[var(--line)] px-4 py-2.5">
+                  <span className="mono text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">
+                    15分钟K线 · {signal.contract} · 最近{signal.chart.bars.length}根
+                  </span>
+                  <span className="mono flex items-center gap-3 text-[10px] text-[var(--muted)]">
+                    <span className="flex items-center gap-1"><i className="inline-block h-0.5 w-4 bg-[#fbbf24]" />MA200</span>
+                    <span className="flex items-center gap-1"><i className="inline-block h-0.5 w-4 bg-[#22d3ee]" />现价</span>
+                    <span className="flex items-center gap-1"><i className="inline-block h-0.5 w-4 bg-[#fbbf24] opacity-50" style={{backgroundImage:"repeating-linear-gradient(90deg,#fbbf24 0 3px,transparent 3px 6px)"}} />止损</span>
+                  </span>
+                </div>
+                <div className="h-[340px] p-2 sm:h-[420px]"><KLineChart signal={signal} /></div>
               </div>
 
               {/* 多空裁决 */}
