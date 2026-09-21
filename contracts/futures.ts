@@ -73,6 +73,81 @@ export const VARIETIES: Variety[] = [
   { code: "PS", name: "多晶硅", exchange: "广期所", multiplier: 3, example: "PS2511" },
 ];
 
+// 各品种交易所保证金比例（近似，用于模拟保证金占用）
+export const MARGIN_RATES: Record<string, number> = {
+  CU: 0.10, AL: 0.10, ZN: 0.10, PB: 0.10, NI: 0.13, SN: 0.13,
+  AU: 0.10, AG: 0.12, RB: 0.10, HC: 0.10, SS: 0.10, BU: 0.10,
+  RU: 0.10, FU: 0.12, SP: 0.10, WR: 0.12,
+  SC: 0.12, LU: 0.12, NR: 0.10, BC: 0.10,
+  M: 0.08, Y: 0.08, P: 0.08, A: 0.08, B: 0.08, C: 0.08, CS: 0.08,
+  J: 0.15, JM: 0.15, I: 0.12, PP: 0.08, L: 0.08, V: 0.08,
+  EG: 0.10, EB: 0.10, PG: 0.10, LH: 0.12, RR: 0.08, JD: 0.09,
+  SR: 0.08, CF: 0.08, TA: 0.08, MA: 0.08, FG: 0.10, OI: 0.08,
+  RM: 0.08, AP: 0.10, CJ: 0.10, UR: 0.10, SA: 0.10, PF: 0.08,
+  PK: 0.08, SM: 0.10, SF: 0.10,
+  SI: 0.10, LC: 0.12, PS: 0.10,
+};
+
+// 默认监控品种池（主连合约，代码 + 0）
+export const DEFAULT_POOL: string[] = [
+  "RB0", "I0", "HC0",      // 黑色
+  "CU0", "AU0", "AG0",     // 有色
+  "SC0", "TA0", "MA0", "FG0", "SA0", // 化工
+  "M0", "Y0", "P0", "CF0", "SR0",    // 农产品
+];
+
+export function varietyOf(symbol: string): Variety | undefined {
+  const code = symbol.replace(/[0-9]+$/, "").toUpperCase();
+  return VARIETIES.find((v) => v.code === code);
+}
+
+// ---------- 品种池扫描 ----------
+export interface PoolScanItem {
+  symbol: string;          // 主连代码，如 RB0
+  varietyCode: string;
+  name: string;
+  multiplier: number;
+  marginRate: number;
+  lastPrice: number;
+  changePct: number;
+  ma200: number;
+  trend: "up" | "down";
+  lastBullish: boolean;
+  longAllowed: boolean;    // 规则3+4 判定
+  shortAllowed: boolean;
+  updatedAt: string;
+  error?: string;
+}
+
+// ---------- 模拟账户 ----------
+export interface PaperAccount {
+  initialCapital: number;
+  cash: number;
+  position: {
+    symbol: string;
+    name: string;
+    direction: "long" | "short";
+    openPrice: number;
+    lots: number;
+    stopLoss: number | null;
+    openTime: string;
+    margin: number;      // 占用保证金
+    lastPrice: number;   // 最新价
+    floatingPnl: number; // 浮动盈亏
+  } | null;
+}
+
+export interface PaperStats {
+  totalTrades: number;
+  closedTrades: number;
+  wins: number;
+  winRate: number;      // %
+  totalPnl: number;
+  maxDrawdown: number;  // 元
+  equity: number;       // 当前权益（现金+浮盈）
+  returnPct: number;    // 收益率 %
+}
+
 export interface TradeInput {
   variety: string;      // 品种代码
   contract: string;     // 合约，如 RB2601

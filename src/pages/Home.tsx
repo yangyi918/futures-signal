@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { trpc } from "@/providers/trpc";
 import { VARIETIES, type SignalResult } from "@contracts/futures";
+import PoolPanel from "@/components/PoolPanel";
+import PaperPanel from "@/components/PaperPanel";
+import RecordsPanel from "@/components/RecordsPanel";
 
 // ---------- 客户端ID（用于找回上次输入） ----------
 function getClientId() {
@@ -171,6 +174,10 @@ export default function Home() {
   const [form, setForm] = useState<FormState>(DEFAULT_FORM);
   const [loaded, setLoaded] = useState(false);
   const clientId = useMemo(getClientId, []);
+
+  // 模拟账户持仓（用于品种池开仓按钮与规则1联动）
+  const accQuery = trpc.paper.getAccount.useQuery({ clientId });
+  const hasPosition = !!accQuery.data?.position;
 
   // 读取上次输入
   const lastInput = trpc.futures.getInput.useQuery({ clientId }, { staleTime: Infinity });
@@ -484,6 +491,11 @@ export default function Home() {
               </div>
             </>
           )}
+
+          {/* 品种池 + 模拟交易 + 交易记录 */}
+          <PaperPanel clientId={clientId} />
+          <PoolPanel clientId={clientId} hasPosition={hasPosition} />
+          <RecordsPanel clientId={clientId} />
 
           {/* 规则原文 */}
           <div className="border border-[var(--line)] bg-[var(--panel)] px-4 py-3 text-[11px] leading-relaxed text-[var(--muted)]">
