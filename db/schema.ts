@@ -1,4 +1,13 @@
-import { mysqlTable, varchar, int, double, timestamp } from "drizzle-orm/mysql-core";
+import {
+  mysqlTable,
+  varchar,
+  int,
+  double,
+  timestamp,
+  mysqlEnum,
+  serial,
+  text,
+} from "drizzle-orm/mysql-core";
 
 // 每个浏览器客户端的最近一次输入（clientId 存于前端 localStorage）
 export const userInputs = mysqlTable("user_inputs", {
@@ -51,3 +60,21 @@ export const paperTrades = mysqlTable("paper_trades", {
   closeTime: timestamp("close_time"),
   status: varchar("status", { length: 8 }).notNull().default("open"), // open / closed
 });
+
+export const users = mysqlTable("users", {
+  id: serial("id").primaryKey(),
+  unionId: varchar("unionId", { length: 255 }).notNull().unique(),
+  name: varchar("name", { length: 255 }),
+  email: varchar("email", { length: 320 }),
+  avatar: text("avatar"),
+  role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt")
+    .defaultNow()
+    .notNull()
+    .$onUpdate(() => new Date()),
+  lastSignInAt: timestamp("lastSignInAt").defaultNow().notNull(),
+});
+
+export type User = typeof users.$inferSelect;
+export type InsertUser = typeof users.$inferInsert;
