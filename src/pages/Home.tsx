@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { trpc } from "@/providers/trpc";
 import { VARIETIES, type SignalResult } from "@contracts/futures";
+import { useAuth } from "@/hooks/useAuth";
 import PoolPanel from "@/components/PoolPanel";
 import PaperPanel from "@/components/PaperPanel";
 import RecordsPanel from "@/components/RecordsPanel";
@@ -173,11 +174,27 @@ function KLineChart({ signal }: { signal: SignalResult }) {
 export default function Home() {
   const [form, setForm] = useState<FormState>(DEFAULT_FORM);
   const [loaded, setLoaded] = useState(false);
+  const [capitalTouched, setCapitalTouched] = useState(false); // 用户手动改过资金后不再自动同步
   const clientId = useMemo(getClientId, []);
+  const { user, isLoading: authLoading, logout } = useAuth();
 
   // 模拟账户持仓（用于品种池开仓按钮与规则1联动）
   const accQuery = trpc.paper.getAccount.useQuery({ clientId });
-  const hasPosition = !!accQuery.data?.position;
+  const acc = accQuery.data;
+  const hasPosition = !!acc?.position;
+
+  // 登录状态变化后，重新拉取对应归属的数据
+  useEffect(() => {
+    setLoaded(false);
+    setCapitalTouched(false);
+  }, [user?.id]);
+
+  // ① 账户资金自动同步：未手动修改时，资金 = 模拟账户实时权益
+  useEffect(() => {
+    if (!loaded || capitalTouched || !acc) return;
+    const equity = acc.cash + (acc.position?.floatingPnl ?? 0);
+    setForm((f) => ({ ...f, capital: String(Math.round(equity)) }));
+  }, [acc, loaded, capitalTouched]);
 
   // 读取上次输入
   const lastInput = trpc.futures.getInput.useQuery({ clientId }, { staleTime: Infinity });
@@ -246,6 +263,21 @@ export default function Home() {
   );
   const signal = signalQuery.data;
 
+  // ② 输入开仓价后，自动按5%红线和当前趋势填写止损价
+  const trend = signal?.trend;
+  useEffect(() => {
+    if (!loaded || !trend) return;
+    const price = parseFloat(form.price), capital = parseFloat(form.capital);
+    const lots = parseInt(form.lots) || 1;
+    const v = VARIETIES.find((x) => x.code === form.variety);
+    if (!(price > 0) || !(capital > 0) || !v) return;
+    const dist = (capital * 0.05) / (lots * v.multiplier);
+    if (!(dist > 0)) return;
+    const stop = trend === "up" ? price - dist : price + dist;
+    setForm((f) => ({ ...f, stopLoss: String(Math.round(stop * 10) / 10) }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.price, form.lots, form.capital, form.variety, trend, loaded]);
+
   // 倒计时
   const [countdown, setCountdown] = useState(60);
   useEffect(() => {
@@ -278,13 +310,29 @@ export default function Home() {
           </div>
           <div className="ml-auto flex items-center gap-4">
             {signal && (
-              <span className="mono text-xs text-[var(--muted)]">
+              <span className="mono hidden text-xs text-[var(--muted)] sm:inline">
                 行情时间 <span className="text-[var(--cyan)]">{signal.updatedAt}</span>
               </span>
             )}
-            <span className="mono text-xs text-[var(--muted)]">
+            <span className="mono hidden text-xs text-[var(--muted)] sm:inline">
               {signalQuery.isFetching ? "刷新中…" : `${countdown}s 后刷新`}
             </span>
+            {/* 登录状态 */}
+            {authLoading ? null : user ? (
+              <span className="flex items-center gap-2 text-xs">
+                {user.avatar && <img src={user.avatar} alt="" className="h-6 w-6 rounded-full" />}
+                <span className="text-[var(--text)]">{user.name ?? "已登录用户"}</span>
+                <button onClick={() => logout()}
+                  className="mono border border-[var(--line)] px-2 py-0.5 text-[10px] text-[var(--muted)] hover:border-[var(--warn)] hover:text-[var(--warn)]">
+                  退出
+                </button>
+              </span>
+            ) : (
+              <a href="/login"
+                className="mono border border-[var(--cyan)] px-3 py-1 text-xs text-[var(--cyan)] hover:bg-[rgba(34,211,238,0.1)]">
+                登录 Kimi
+              </a>
+            )}
           </div>
         </div>
       </header>
@@ -296,6 +344,11 @@ export default function Home() {
             <span className="mono text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">交易参数 ORDER PARAMS</span>
           </div>
           <div className="space-y-4 p-4">
+            {!user && !authLoading && (
+              <div className="border border-[var(--warn)] bg-[rgba(251,191,36,0.08)] px-3 py-2 text-[11px] leading-relaxed text-[var(--warn)]">
+                当前为缺省用户：数据（模拟账户/品种池/交易记录）所有访客共享。登录 Kimi 后自动切换到个人独立数据。
+              </div>
+            )}
             <div>
               <label className="mb-1 block text-xs text-[var(--muted)]">品种</label>
               <select value={form.variety} onChange={set("variety")}
@@ -325,14 +378,21 @@ export default function Home() {
                   className="mono w-full border border-[var(--line)] bg-[var(--panel2)] px-3 py-2 text-sm outline-none focus:border-[var(--cyan)]" />
               </div>
               <div>
-                <label className="mb-1 block text-xs text-[var(--muted)]">计划止损价（选填）</label>
-                <input type="number" value={form.stopLoss} onChange={set("stopLoss")} placeholder="0"
+                <label className="mb-1 block text-xs text-[var(--muted)]">
+                  计划止损价
+                  <span className="mono ml-1 text-[var(--cyan)]">· 按5%红线自动计算</span>
+                </label>
+                <input type="number" value={form.stopLoss} onChange={set("stopLoss")} placeholder="自动"
                   className="mono w-full border border-[var(--line)] bg-[var(--panel2)] px-3 py-2 text-sm outline-none focus:border-[var(--cyan)]" />
               </div>
             </div>
             <div>
-              <label className="mb-1 block text-xs text-[var(--muted)]">账户总资金（元）</label>
-              <input type="number" value={form.capital} onChange={set("capital")}
+              <label className="mb-1 block text-xs text-[var(--muted)]">
+                账户总资金（元）
+                {!capitalTouched && <span className="mono ml-1 text-[var(--cyan)]">· 自动同步账户权益</span>}
+              </label>
+              <input type="number" value={form.capital}
+                onChange={(e) => { setCapitalTouched(true); set("capital")(e); }}
                 className="mono w-full border border-[var(--line)] bg-[var(--panel2)] px-3 py-2 text-sm outline-none focus:border-[var(--cyan)]" />
             </div>
             <div>

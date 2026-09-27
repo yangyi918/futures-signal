@@ -29,13 +29,15 @@ export const futuresRouter = createRouter({
     return evaluateSignal(input as TradeInput, variety);
   }),
 
-  // 保存最近一次输入（按浏览器 clientId）
+  // 保存最近一次输入（登录→按用户，未登录→按浏览器 clientId）
   saveInput: publicQuery
     .input(z.object({ clientId: z.string().min(8).max(64), data: tradeInputSchema }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = getDb();
+      const key = ctx.user ? `u:${ctx.user.id}` : input.clientId;
       const row = {
-        clientId: input.clientId,
+        clientId: key,
+        userId: ctx.user?.id ?? null,
         variety: input.data.variety.toUpperCase(),
         contract: input.data.contract.toUpperCase(),
         price: input.data.price,
@@ -47,10 +49,10 @@ export const futuresRouter = createRouter({
       const existing = await db
         .select({ clientId: userInputs.clientId })
         .from(userInputs)
-        .where(eq(userInputs.clientId, input.clientId))
+        .where(eq(userInputs.clientId, key))
         .limit(1);
       if (existing.length > 0) {
-        await db.update(userInputs).set(row).where(eq(userInputs.clientId, input.clientId));
+        await db.update(userInputs).set(row).where(eq(userInputs.clientId, key));
       } else {
         await db.insert(userInputs).values(row);
       }
@@ -60,12 +62,13 @@ export const futuresRouter = createRouter({
   // 读取上次输入
   getInput: publicQuery
     .input(z.object({ clientId: z.string().min(8).max(64) }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = getDb();
+      const key = ctx.user ? `u:${ctx.user.id}` : input.clientId;
       const rows = await db
         .select()
         .from(userInputs)
-        .where(eq(userInputs.clientId, input.clientId))
+        .where(eq(userInputs.clientId, key))
         .limit(1);
       if (rows.length === 0) return null;
       const r = rows[0];

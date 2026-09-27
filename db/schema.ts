@@ -7,11 +7,13 @@ import {
   mysqlEnum,
   serial,
   text,
+  bigint,
 } from "drizzle-orm/mysql-core";
 
 // 每个浏览器客户端的最近一次输入（clientId 存于前端 localStorage）
 export const userInputs = mysqlTable("user_inputs", {
   clientId: varchar("client_id", { length: 64 }).primaryKey(),
+  userId: bigint("user_id", { mode: "number", unsigned: true }),
   variety: varchar("variety", { length: 16 }).notNull().default("RB"),
   contract: varchar("contract", { length: 32 }).notNull().default(""),
   price: double("price").notNull().default(0),
@@ -26,6 +28,7 @@ export const userInputs = mysqlTable("user_inputs", {
 export const watchlist = mysqlTable("watchlist", {
   id: int("id").primaryKey().autoincrement(),
   clientId: varchar("client_id", { length: 64 }).notNull(),
+  userId: bigint("user_id", { mode: "number", unsigned: true }),
   symbol: varchar("symbol", { length: 16 }).notNull(), // 如 RB0
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -33,6 +36,7 @@ export const watchlist = mysqlTable("watchlist", {
 // 模拟账户（每个客户端一个）
 export const paperAccounts = mysqlTable("paper_accounts", {
   clientId: varchar("client_id", { length: 64 }).primaryKey(),
+  userId: bigint("user_id", { mode: "number", unsigned: true }),
   initialCapital: double("initial_capital").notNull().default(100000),
   cash: double("cash").notNull().default(100000),
   // 当前持仓（规则1：最多1个品种、1手）
@@ -49,6 +53,7 @@ export const paperAccounts = mysqlTable("paper_accounts", {
 export const paperTrades = mysqlTable("paper_trades", {
   id: int("id").primaryKey().autoincrement(),
   clientId: varchar("client_id", { length: 64 }).notNull(),
+  userId: bigint("user_id", { mode: "number", unsigned: true }),
   symbol: varchar("symbol", { length: 16 }).notNull(),
   direction: varchar("direction", { length: 8 }).notNull(), // long / short
   openPrice: double("open_price").notNull(),

@@ -9,12 +9,18 @@ import { fetch15MinKlines } from "./sina";
 
 const cid = z.string().min(8).max(64);
 
-async function ensureAccount(clientId: string) {
+// 数据归属：登录用户 → "u:{id}"；未登录 → 缺省用户 "default"
+type Ctx = { user?: { id: number } };
+function ownerOf(ctx: Ctx): { owner: string; userId: number | null } {
+  return ctx.user ? { owner: `u:${ctx.user.id}`, userId: ctx.user.id } : { owner: "default", userId: null };
+}
+
+async function ensureAccount(owner: string, userId: number | null) {
   const db = getDb();
-  const rows = await db.select().from(paperAccounts).where(eq(paperAccounts.clientId, clientId)).limit(1);
+  const rows = await db.select().from(paperAccounts).where(eq(paperAccounts.clientId, owner)).limit(1);
   if (rows.length) return rows[0];
-  await db.insert(paperAccounts).values({ clientId, initialCapital: 100000, cash: 100000 });
-  const r = await db.select().from(paperAccounts).where(eq(paperAccounts.clientId, clientId)).limit(1);
+  await db.insert(paperAccounts).values({ clientId: owner, userId, initialCapital: 100000, cash: 100000 });
+  const r = await db.select().from(paperAccounts).where(eq(paperAccounts.clientId, owner)).limit(1);
   return r[0];
 }
 
@@ -23,8 +29,8 @@ async function currentPrice(symbol: string): Promise<number> {
   return bars[bars.length - 1].c;
 }
 
-async function buildAccountView(clientId: string): Promise<PaperAccount> {
-  const a = await ensureAccount(clientId);
+async function buildAccountView(owner: string, userId: number | null): Promise<PaperAccount> {
+  const a = await ensureAccount(owner, userId);
   if (!a.posSymbol) return { initialCapital: a.initialCapital, cash: a.cash, position: null };
   const v = varietyOf(a.posSymbol);
   let lastPrice = a.posPrice ?? 0;
@@ -51,12 +57,13 @@ async function buildAccountView(clientId: string): Promise<PaperAccount> {
 
 export const paperRouter = createRouter({
   // ---------- 品种池 ----------
-  getWatchlist: publicQuery.input(z.object({ clientId: cid })).query(async ({ input }) => {
+  getWatchlist: publicQuery.input(z.object({ clientId: cid })).query(async ({ ctx }) => {
     const db = getDb();
-    const rows = await db.select().from(watchlist).where(eq(watchlist.clientId, input.clientId));
+    const { owner, userId } = ownerOf(ctx);
+    const rows = await db.select().from(watchlist).where(eq(watchlist.clientId, owner));
     if (rows.length === 0) {
       // 首次：写入默认池
-      await db.insert(watchlist).values(DEFAULT_POOL.map((s) => ({ clientId: input.clientId, symbol: s })));
+      await db.insert(watchlist).values(DEFAULT_POOL.map((s) => ({ clientId: owner, userId, symbol: s })));
       return DEFAULT_POOL;
     }
     return rows.map((r) => r.symbol);
@@ -64,26 +71,28 @@ export const paperRouter = createRouter({
 
   addSymbol: publicQuery
     .input(z.object({ clientId: cid, symbol: z.string().min(2).max(16) }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = getDb();
+      const { owner, userId } = ownerOf(ctx);
       const sym = input.symbol.toUpperCase();
       if (!varietyOf(sym)) throw new Error(`未知品种代码：${sym}`);
-      const rows = await db.select().from(watchlist).where(eq(watchlist.clientId, input.clientId));
+      const rows = await db.select().from(watchlist).where(eq(watchlist.clientId, owner));
       if (rows.length === 0) {
-        await db.insert(watchlist).values(DEFAULT_POOL.map((s) => ({ clientId: input.clientId, symbol: s })));
+        await db.insert(watchlist).values(DEFAULT_POOL.map((s) => ({ clientId: owner, userId, symbol: s })));
       } else if (rows.some((r) => r.symbol === sym)) {
         throw new Error("该合约已在品种池中");
       }
-      await db.insert(watchlist).values({ clientId: input.clientId, symbol: sym });
+      await db.insert(watchlist).values({ clientId: owner, userId, symbol: sym });
       return { ok: true };
     }),
 
   removeSymbol: publicQuery
     .input(z.object({ clientId: cid, symbol: z.string().min(2).max(16) }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = getDb();
+      const { owner } = ownerOf(ctx);
       await db.delete(watchlist).where(
-        and(eq(watchlist.clientId, input.clientId), eq(watchlist.symbol, input.symbol.toUpperCase())),
+        and(eq(watchlist.clientId, owner), eq(watchlist.symbol, input.symbol.toUpperCase())),
       );
       return { ok: true };
     }),
@@ -99,19 +108,21 @@ export const paperRouter = createRouter({
     }),
 
   // ---------- 模拟账户 ----------
-  getAccount: publicQuery.input(z.object({ clientId: cid })).query(({ input }) =>
-    buildAccountView(input.clientId),
-  ),
+  getAccount: publicQuery.input(z.object({ clientId: cid })).query(({ ctx }) => {
+    const { owner, userId } = ownerOf(ctx);
+    return buildAccountView(owner, userId);
+  }),
 
-  resetAccount: publicQuery.input(z.object({ clientId: cid })).mutation(async ({ input }) => {
+  resetAccount: publicQuery.input(z.object({ clientId: cid })).mutation(async ({ ctx }) => {
     const db = getDb();
-    await ensureAccount(input.clientId);
+    const { owner, userId } = ownerOf(ctx);
+    await ensureAccount(owner, userId);
     await db.update(paperAccounts).set({
       initialCapital: 100000, cash: 100000,
       posSymbol: null, posDirection: null, posPrice: null, posLots: null,
       posStopLoss: null, posOpenTime: null,
-    }).where(eq(paperAccounts.clientId, input.clientId));
-    await db.delete(paperTrades).where(eq(paperTrades.clientId, input.clientId));
+    }).where(eq(paperAccounts.clientId, owner));
+    await db.delete(paperTrades).where(eq(paperTrades.clientId, owner));
     return { ok: true };
   }),
 
@@ -123,10 +134,11 @@ export const paperRouter = createRouter({
       direction: z.enum(["long", "short"]),
       stopLoss: z.number().positive().nullish(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = getDb();
+      const { owner, userId } = ownerOf(ctx);
       const sym = input.symbol.toUpperCase();
-      const a = await ensureAccount(input.clientId);
+      const a = await ensureAccount(owner, userId);
       if (a.posSymbol) throw new Error("规则1：当前已有持仓，请先平仓");
       const v = varietyOf(sym);
       if (!v) throw new Error(`未知品种：${sym}`);
@@ -150,19 +162,20 @@ export const paperRouter = createRouter({
         cash: a.cash - margin,
         posSymbol: sym, posDirection: input.direction, posPrice: price,
         posLots: lots, posStopLoss: input.stopLoss ?? null, posOpenTime: new Date(),
-      }).where(eq(paperAccounts.clientId, input.clientId));
+      }).where(eq(paperAccounts.clientId, owner));
 
       await db.insert(paperTrades).values({
-        clientId: input.clientId, symbol: sym, direction: input.direction,
+        clientId: owner, userId, symbol: sym, direction: input.direction,
         openPrice: price, lots, stopLoss: input.stopLoss ?? null, status: "open",
       });
       return { ok: true, price, margin };
     }),
 
   // 平仓：释放保证金 + 结算盈亏
-  close: publicQuery.input(z.object({ clientId: cid })).mutation(async ({ input }) => {
+  close: publicQuery.input(z.object({ clientId: cid })).mutation(async ({ ctx }) => {
     const db = getDb();
-    const a = await ensureAccount(input.clientId);
+    const { owner, userId } = ownerOf(ctx);
+    const a = await ensureAccount(owner, userId);
     if (!a.posSymbol) throw new Error("当前无持仓");
     const v = varietyOf(a.posSymbol);
     const mult = v?.multiplier ?? 1;
@@ -176,12 +189,12 @@ export const paperRouter = createRouter({
       cash: a.cash + margin + pnl,
       posSymbol: null, posDirection: null, posPrice: null, posLots: null,
       posStopLoss: null, posOpenTime: null,
-    }).where(eq(paperAccounts.clientId, input.clientId));
+    }).where(eq(paperAccounts.clientId, owner));
 
     await db.update(paperTrades).set({
       closePrice: lastPrice, pnl, closeTime: new Date(), status: "closed",
     }).where(and(
-      eq(paperTrades.clientId, input.clientId),
+      eq(paperTrades.clientId, owner),
       eq(paperTrades.symbol, a.posSymbol),
       eq(paperTrades.status, "open"),
     ));
@@ -189,13 +202,14 @@ export const paperRouter = createRouter({
   }),
 
   // 交易记录 + 统计
-  records: publicQuery.input(z.object({ clientId: cid })).query(async ({ input }) => {
+  records: publicQuery.input(z.object({ clientId: cid })).query(async ({ ctx }) => {
     const db = getDb();
-    const a = await ensureAccount(input.clientId);
+    const { owner, userId } = ownerOf(ctx);
+    const a = await ensureAccount(owner, userId);
     const trades = await db.select().from(paperTrades)
-      .where(eq(paperTrades.clientId, input.clientId))
+      .where(eq(paperTrades.clientId, owner))
       .orderBy(desc(paperTrades.id));
-    const view = await buildAccountView(input.clientId);
+    const view = await buildAccountView(owner, userId);
     const floating = view.position?.floatingPnl ?? 0;
     const stats = computeStats(a.initialCapital, a.cash, floating, trades);
     return {
